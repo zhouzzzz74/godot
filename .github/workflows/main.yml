@@ -1,0 +1,29 @@
+name: Build Stripped Templates
+on: [workflow_dispatch] # 允许手动点击运行
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python and SCons
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install scons
+
+      - name: Compile Windows Template (Release)
+        run: |
+          scons platform=windows target=template_release arch=x86_64 disable_3d=yes optimize=size -j2
+        # 核心参数说明：
+        # disable_3d=yes: 彻底砍掉 3D 模块，减小包体最大功臣
+        # optimize=size: 针对体积进行优化编译
+        # target=template_release: 编译用于发布的模板
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-stripped-template
+          path: bin/*.exe
