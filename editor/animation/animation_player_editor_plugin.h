@@ -296,7 +296,7 @@ protected:
 	void _notification(int p_what);
 
 	void _property_keyed(const String &p_keyed, const Variant &p_value, bool p_advance);
-	void _transform_key_request(Object *sp, const String &p_sub, const Transform3D &p_key);
+	void _transform_3d_key_request(Object *sp, const String &p_sub, const Transform3D &p_key);
 	void _update_keying();
 
 public:
@@ -331,7 +331,7 @@ public:
 class AnimationTrackKeyEditEditorPlugin : public EditorPlugin {
 	GDCLASS(AnimationTrackKeyEditEditorPlugin, EditorPlugin);
 
-	EditorInspectorPluginAnimationTrackKeyEdit *atk_plugin = nullptr;
+	Ref<EditorInspectorPluginAnimationTrackKeyEdit> atk_plugin;
 
 public:
 	virtual bool handles(Object *p_object) const override;
@@ -356,7 +356,7 @@ public:
 class AnimationMarkerKeyEditEditorPlugin : public EditorPlugin {
 	GDCLASS(AnimationMarkerKeyEditEditorPlugin, EditorPlugin);
 
-	EditorInspectorPluginAnimationMarkerKeyEdit *amk_plugin = nullptr;
+	Ref<EditorInspectorPluginAnimationMarkerKeyEdit> amk_plugin;
 
 public:
 	virtual bool handles(Object *p_object) const override;

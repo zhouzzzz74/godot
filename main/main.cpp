@@ -47,6 +47,7 @@
 #include "core/io/image.h"
 #include "core/io/image_loader.h"
 #include "core/io/resource_loader.h"
+#include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
 #include "core/object/message_queue.h"
 #include "core/object/script_language.h"
@@ -63,8 +64,6 @@
 #include "main/main_timer_sync.h"
 #include "main/performance.h"
 #include "main/splash.gen.h"
-#include "modules/register_module_types.h"
-#include "platform/register_platform_apis.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "scene/property_list_helper.h"
@@ -83,6 +82,9 @@
 #include "servers/rendering/rendering_server_default.h"
 #include "servers/text/text_server.h"
 #include "servers/text/text_server_dummy.h"
+
+#include "modules/register_module_types.h"
+#include "platform/register_platform_apis.h"
 
 // 2D
 #ifndef NAVIGATION_2D_DISABLED
@@ -109,6 +111,7 @@
 #endif // XR_DISABLED
 
 #ifdef TESTS_ENABLED
+#include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "tests/test_main.h"
 #endif
 
@@ -572,8 +575,11 @@ void Main::print_help(const char *p_binary) {
 #if defined(OVERRIDE_PATH_ENABLED)
 	print_help_option("--path <directory>", "Path to a project (<directory> must contain a \"project.godot\" file).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--scene <path>", "Path or UID of a scene in the project that should be started.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
-	print_help_option("--main-pack <file>", "Path to a pack (.pck) file to load.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 #endif // defined(OVERRIDE_PATH_ENABLED)
+#if defined(OVERRIDE_PATH_ENABLED) || defined(ANDROID_ENABLED) || defined(WEB_ENABLED)
+	print_help_option("--main-pack <file>", "Path to a pack (.pck) file to load.\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+#endif // defined(OVERRIDE_PATH_ENABLED) || defined(ANDROID_ENABLED) || defined(WEB_ENABLED)
+
 #ifdef DISABLE_DEPRECATED
 	print_help_option("--render-thread <mode>", "Render thread mode (\"safe\", \"separate\").\n");
 #else
@@ -614,7 +620,7 @@ void Main::print_help(const char *p_binary) {
 
 	print_help_option("--rendering-method <renderer>", "Renderer name. Requires driver support.\n");
 	print_help_option("--rendering-driver <driver>", "Rendering driver (depends on display driver).\n");
-	print_help_option("--gpu-index <device_index>", "Use a specific GPU (run with --verbose to get a list of available devices).\n");
+	print_help_option("--gpu-index <device_index>", "Use a specific GPU (only available on the Forward+/Mobile renderers; run with --verbose to get a list of available devices).\n");
 	print_help_option("--text-driver <driver>", "Text driver (used for font rendering, bidirectional support and shaping).\n");
 	print_help_option("--tablet-driver <driver>", "Pen tablet input driver.\n");
 	print_help_option("--headless", "Enable headless mode (--display-driver headless --audio-driver Dummy). Useful for servers and with --script.\n");
@@ -739,9 +745,12 @@ void Main::test_cleanup() {}
 // are initialized here. This also combines `Main::setup2()` initialization.
 Error Main::test_setup() {
 	Thread::make_main_thread();
+
 	set_current_thread_safe_for_nodes(true);
 
 	OS::get_singleton()->initialize();
+
+	CoreGlobals::print_ready = true;
 
 	engine = memnew(Engine);
 
@@ -798,6 +807,13 @@ Error Main::test_setup() {
 	}
 	translation_server->load_project_translations(translation_server->get_main_domain());
 	ResourceLoader::load_translation_remaps(); //load remaps for resources
+
+	message_queue = memnew(MessageQueue);
+
+	RasterizerDummy::make_current();
+	rendering_server = memnew(RenderingServerDefault());
+	rendering_server->init();
+	rendering_server->set_render_loop_enabled(false);
 
 	// Initialize ThemeDB early so that scene types can register their theme items.
 	// Default theme will be initialized later, after modules and ScriptServer are ready.
@@ -869,6 +885,11 @@ Error Main::test_setup() {
 void Main::test_cleanup() {
 	ERR_FAIL_COND(!_start_success);
 
+	Thread::make_main_thread();
+
+	// Printing in the usual way can become problematic during/after cleanup.
+	CoreGlobals::print_ready = false;
+
 	for (int i = 0; i < TextServerManager::get_singleton()->get_interface_count(); i++) {
 		TextServerManager::get_singleton()->get_interface(i)->cleanup();
 	}
@@ -892,6 +913,17 @@ void Main::test_cleanup() {
 
 	finalize_theme_db();
 
+	if (rendering_server) {
+		rendering_server->sync();
+		rendering_server->global_shader_parameters_clear();
+		rendering_server->finish();
+		memdelete(rendering_server);
+	}
+	if (message_queue) {
+		message_queue->flush();
+		memdelete(message_queue);
+	}
+
 #ifndef NAVIGATION_2D_DISABLED
 	NavigationServer2DManager::finalize_server();
 	NavigationServer2DManager::finalize_server_manager();
@@ -908,40 +940,28 @@ void Main::test_cleanup() {
 	EngineDebugger::deinitialize();
 	OS::get_singleton()->finalize();
 
-	if (packed_data) {
-		memdelete(packed_data);
-	}
-	if (translation_server) {
-		memdelete(translation_server);
-	}
-	if (tsman) {
-		memdelete(tsman);
-	}
+	memdelete(packed_data);
+	memdelete(translation_server);
+	memdelete(tsman);
 #ifndef PHYSICS_3D_DISABLED
-	if (physics_server_3d_manager) {
-		memdelete(physics_server_3d_manager);
-	}
+	memdelete(physics_server_3d_manager);
 #endif // PHYSICS_3D_DISABLED
 #ifndef PHYSICS_2D_DISABLED
-	if (physics_server_2d_manager) {
-		memdelete(physics_server_2d_manager);
-	}
+	memdelete(physics_server_2d_manager);
 #endif // PHYSICS_2D_DISABLED
-	if (globals) {
-		memdelete(globals);
-	}
+	memdelete(globals);
 
 	unregister_core_driver_types();
 	unregister_core_extensions();
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
 
-	if (engine) {
-		memdelete(engine);
-	}
+	memdelete(engine);
 
 	unregister_core_types();
 
 	OS::get_singleton()->finalize_core();
+
+	Thread::release_main_thread();
 }
 #endif // TESTS_ENABLED
 
@@ -1004,6 +1024,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	set_current_thread_safe_for_nodes(true);
 
 	OS::get_singleton()->initialize();
+
+	CoreGlobals::print_ready = true;
 
 #if !defined(OVERRIDE_PATH_ENABLED) && !defined(TOOLS_ENABLED)
 	String old_cwd = OS::get_singleton()->get_cwd();
@@ -1087,8 +1109,10 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	bool quiet_stdout = false;
 	int separate_thread_render = -1; // Tri-state: -1 = not set, 0 = false, 1 = true.
 
+#if defined(DEBUG_ENABLED) || defined(TOOLS_ENABLED)
 	String remotefs;
 	String remotefs_pass;
+#endif
 
 	Vector<String> breakpoints;
 	bool delta_smoothing_override = false;
@@ -1826,10 +1850,28 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				goto error;
 			}
 		} else if (arg == "--main-pack") {
-#if defined(OVERRIDE_PATH_ENABLED) || defined(WEB_ENABLED) // Note: main-pack is always used on web and can't be disabled.
+// Note: main-pack is always used on web and can't be disabled.
+// Note: main-pack can be used on Android so long as it's located within the 'assets' directory which is in the executable.
+#if defined(OVERRIDE_PATH_ENABLED) || defined(WEB_ENABLED) || defined(ANDROID_ENABLED)
 			if (N) {
 				main_pack = N->get();
 				N = N->next();
+
+#if defined(ANDROID_ENABLED) && !defined(OVERRIDE_PATH_ENABLED)
+				// Validate that `main_pack` is located within the 'assets' directory.
+				Ref<FileAccess> main_pack_fa = FileAccess::create_for_path(main_pack);
+				if (main_pack_fa.is_valid()) {
+					if (main_pack_fa->get_access_type() != FileAccess::ACCESS_RESOURCES) {
+						ERR_PRINT(
+								"--main-pack is attempting to load from outside of the executable, but this Godot binary was compiled without support for path overrides. Aborting.\n"
+								"To be able to use it, use the `disable_path_overrides=no` SCons option when compiling Godot.\n");
+						goto error;
+					}
+				} else {
+					ERR_PRINT("Invalid path to main pack file, aborting.\n");
+					goto error;
+				}
+#endif // defined(ANDROID_ENABLED) && !defined(OVERRIDE_PATH_ENABLED)
 			} else {
 				OS::get_singleton()->print("Missing path to main pack file, aborting.\n");
 				goto error;
@@ -1839,7 +1881,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 					"`--main-pack` was specified on the command line, but this Godot binary was compiled without support for path overrides. Aborting.\n"
 					"To be able to use it, use the `disable_path_overrides=no` SCons option when compiling Godot.\n");
 			goto error;
-#endif // defined(OVERRIDE_PATH_ENABLED) || defined(WEB_ENABLED)
+#endif // defined(OVERRIDE_PATH_ENABLED) || defined(WEB_ENABLED) || defined(ANDROID_ENABLED)
 
 		} else if (arg == "-d" || arg == "--debug") {
 			debug_uri = "local://";
@@ -2825,6 +2867,8 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "xr/openxr/environment_blend_mode", PROPERTY_HINT_ENUM, "Opaque,Additive,Alpha"), "0");
 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "xr/openxr/foveation_level", PROPERTY_HINT_ENUM, "Off,Low,Medium,High"), "0");
 	GLOBAL_DEF_BASIC("xr/openxr/foveation_dynamic", false);
+	GLOBAL_DEF_BASIC("xr/openxr/foveation_eye_tracked", true);
+	GLOBAL_DEF_BASIC("xr/openxr/foveation_with_subsampled_images", true);
 
 	GLOBAL_DEF_BASIC("xr/openxr/submit_depth_buffer", false);
 	GLOBAL_DEF_BASIC("xr/openxr/startup_alert", true);
@@ -2833,6 +2877,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "xr/openxr/extensions/debug_utils", PROPERTY_HINT_ENUM, "Disabled,Error,Warning,Info,Verbose"), "0");
 	GLOBAL_DEF_BASIC(PropertyInfo(Variant::INT, "xr/openxr/extensions/debug_message_types", PROPERTY_HINT_FLAGS, "General,Validation,Performance,Conformance"), "15");
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/frame_synthesis", false);
+	GLOBAL_DEF_BASIC("xr/openxr/extensions/frame_synthesis/flip_y", false);
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/hand_tracking", false);
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/hand_tracking_unobstructed_data_source", false); // XR_HAND_TRACKING_DATA_SOURCE_UNOBSTRUCTED_EXT
 	GLOBAL_DEF_BASIC("xr/openxr/extensions/hand_tracking_controller_data_source", false); // XR_HAND_TRACKING_DATA_SOURCE_CONTROLLER_EXT
@@ -2867,9 +2912,6 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	Engine::get_singleton()->set_frame_delay(frame_delay);
 
 	message_queue = memnew(MessageQueue);
-
-	Thread::release_main_thread(); // If setup2() is called from another thread, that one will become main thread, so preventively release this one.
-	set_current_thread_safe_for_nodes(false);
 
 #if defined(STEAMAPI_ENABLED)
 	if (editor || project_manager) {
@@ -2910,48 +2952,34 @@ error:
 
 	EngineDebugger::deinitialize();
 
-	if (performance) {
-		memdelete(performance);
-	}
-	if (input_map) {
-		memdelete(input_map);
-	}
-	if (translation_server) {
-		memdelete(translation_server);
-	}
-	if (globals) {
-		memdelete(globals);
-	}
-	if (packed_data) {
-		memdelete(packed_data);
-	}
+	memdelete(performance);
+	memdelete(input_map);
+	memdelete(translation_server);
+	memdelete(globals);
+	memdelete(packed_data);
 
 	unregister_core_driver_types();
 	unregister_core_extensions();
 
-	if (engine) {
-		memdelete(engine);
-	}
+	memdelete(engine);
 
 	unregister_core_types();
 
 	OS::get_singleton()->_cmdline.clear();
 	OS::get_singleton()->_user_args.clear();
 
-	if (message_queue) {
-		memdelete(message_queue);
-	}
+	memdelete(message_queue);
 
 	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Setup");
 
 #if defined(STEAMAPI_ENABLED)
-	if (steam_tracker) {
-		memdelete(steam_tracker);
-	}
+	memdelete(steam_tracker);
 #endif
 
 	OS::get_singleton()->finalize_core();
 	locale = String();
+
+	Thread::release_main_thread();
 
 	return exit_err;
 }
@@ -3334,29 +3362,19 @@ Error Main::setup2(bool p_show_boot_logo) {
 		if (err != OK || display_server == nullptr) {
 			ERR_PRINT("Unable to create DisplayServer, all display drivers failed.\nUse \"--headless\" command line argument to run the engine in headless mode if this is desired (e.g. for continuous integration).");
 
-			if (display_server) {
-				memdelete(display_server);
-			}
+			memdelete(display_server);
 
 			GDExtensionManager::get_singleton()->deinitialize_extensions(GDExtension::INITIALIZATION_LEVEL_SERVERS);
 			uninitialize_modules(MODULE_INITIALIZATION_LEVEL_SERVERS);
 			unregister_server_types();
 
-			if (input) {
-				memdelete(input);
-			}
-			if (tsman) {
-				memdelete(tsman);
-			}
+			memdelete(input);
+			memdelete(tsman);
 #ifndef PHYSICS_3D_DISABLED
-			if (physics_server_3d_manager) {
-				memdelete(physics_server_3d_manager);
-			}
+			memdelete(physics_server_3d_manager);
 #endif // PHYSICS_3D_DISABLED
 #ifndef PHYSICS_2D_DISABLED
-			if (physics_server_2d_manager) {
-				memdelete(physics_server_2d_manager);
-			}
+			memdelete(physics_server_2d_manager);
 #endif // PHYSICS_2D_DISABLED
 
 			return err;
@@ -3671,7 +3689,7 @@ Error Main::setup2(bool p_show_boot_logo) {
 		if (!text_driver.is_empty()) {
 			/* Load user selected text server. */
 			for (int i = 0; i < TextServerManager::get_singleton()->get_interface_count(); i++) {
-				if (TextServerManager::get_singleton()->get_interface(i)->get_name() == text_driver) {
+				if (TextServerManager::get_singleton()->get_interface(i)->get_short_name() == text_driver || TextServerManager::get_singleton()->get_interface(i)->get_name() == text_driver) {
 					text_driver_idx = i;
 					break;
 				}
@@ -4315,7 +4333,7 @@ int Main::start() {
 		ERR_FAIL_COND_V_MSG(script_res.is_null(), EXIT_FAILURE, "Can't load script: " + script);
 
 		if (check_only) {
-			return script_res->is_valid() ? EXIT_SUCCESS : EXIT_FAILURE;
+			return script_res->is_script_valid() ? EXIT_SUCCESS : EXIT_FAILURE;
 		}
 
 		if (script_res->can_instantiate()) {
@@ -4323,9 +4341,7 @@ int Main::start() {
 			Object *obj = ClassDB::instantiate(instance_type);
 			MainLoop *script_loop = Object::cast_to<MainLoop>(obj);
 			if (!script_loop) {
-				if (obj) {
-					memdelete(obj);
-				}
+				memdelete(obj);
 				OS::get_singleton()->alert(vformat("Can't load the script \"%s\" as it doesn't inherit from SceneTree or MainLoop.", script));
 				ERR_FAIL_V_MSG(EXIT_FAILURE, vformat("Can't load the script \"%s\" as it doesn't inherit from SceneTree or MainLoop.", script));
 			}
@@ -4347,9 +4363,7 @@ int Main::start() {
 			Object *obj = ClassDB::instantiate(script_base);
 			MainLoop *script_loop = Object::cast_to<MainLoop>(obj);
 			if (!script_loop) {
-				if (obj) {
-					memdelete(obj);
-				}
+				memdelete(obj);
 				OS::get_singleton()->alert("Error: Invalid MainLoop script base type: " + script_base);
 				ERR_FAIL_V_MSG(EXIT_FAILURE, vformat("The global class %s does not inherit from SceneTree or MainLoop.", main_loop_type));
 			}
@@ -4682,7 +4696,7 @@ int Main::start() {
 #ifdef TOOLS_ENABLED
 			if (editor) {
 				if (!recovery_mode && (game_path != ResourceUID::ensure_path(String(GLOBAL_GET("application/run/main_scene"))) || !editor_node->has_scenes_in_session())) {
-					Error serr = editor_node->load_scene(local_game_path);
+					Error serr = editor_node->open_scene(local_game_path);
 					if (serr != OK) {
 						ERR_PRINT("Failed to load scene");
 					}
@@ -5159,11 +5173,16 @@ void Main::force_redraw() {
  * The order matters as some of those steps are linked with each other.
  */
 void Main::cleanup(bool p_force) {
+	Thread::make_main_thread();
+
 	GodotProfileZone("cleanup");
 	OS::get_singleton()->benchmark_begin_measure("Shutdown", "Main::Cleanup");
 	if (!p_force) {
 		ERR_FAIL_COND(!_start_success);
 	}
+
+	// Printing in the usual way can become problematic during/after cleanup.
+	CoreGlobals::print_ready = false;
 
 #ifdef DEBUG_ENABLED
 	if (input) {
@@ -5259,9 +5278,7 @@ void Main::cleanup(bool p_force) {
 	EngineDebugger::deinitialize();
 
 #ifndef XR_DISABLED
-	if (xr_server) {
-		memdelete(xr_server);
-	}
+	memdelete(xr_server);
 #endif // XR_DISABLED
 
 	if (audio_server) {
@@ -5269,46 +5286,26 @@ void Main::cleanup(bool p_force) {
 		memdelete(audio_server);
 	}
 
-	if (camera_server) {
-		memdelete(camera_server);
-	}
+	memdelete(camera_server);
 
 	OS::get_singleton()->finalize();
 
 	finalize_display();
 
-	if (input) {
-		memdelete(input);
-	}
+	memdelete(input);
 
-	if (packed_data) {
-		memdelete(packed_data);
-	}
-	if (performance) {
-		memdelete(performance);
-	}
-	if (input_map) {
-		memdelete(input_map);
-	}
-	if (translation_server) {
-		memdelete(translation_server);
-	}
-	if (tsman) {
-		memdelete(tsman);
-	}
+	memdelete(packed_data);
+	memdelete(performance);
+	memdelete(input_map);
+	memdelete(translation_server);
+	memdelete(tsman);
 #ifndef PHYSICS_3D_DISABLED
-	if (physics_server_3d_manager) {
-		memdelete(physics_server_3d_manager);
-	}
+	memdelete(physics_server_3d_manager);
 #endif // PHYSICS_3D_DISABLED
 #ifndef PHYSICS_2D_DISABLED
-	if (physics_server_2d_manager) {
-		memdelete(physics_server_2d_manager);
-	}
+	memdelete(physics_server_2d_manager);
 #endif // PHYSICS_2D_DISABLED
-	if (globals) {
-		memdelete(globals);
-	}
+	memdelete(globals);
 
 	if (OS::get_singleton()->is_restart_on_exit_set()) {
 		//attempt to restart with arguments
@@ -5322,18 +5319,14 @@ void Main::cleanup(bool p_force) {
 	memdelete(message_queue);
 
 #if defined(STEAMAPI_ENABLED)
-	if (steam_tracker) {
-		memdelete(steam_tracker);
-	}
+	memdelete(steam_tracker);
 #endif
 
 	unregister_core_driver_types();
 	unregister_core_extensions();
 	uninitialize_modules(MODULE_INITIALIZATION_LEVEL_CORE);
 
-	if (engine) {
-		memdelete(engine);
-	}
+	memdelete(engine);
 
 	unregister_core_types();
 
@@ -5341,4 +5334,6 @@ void Main::cleanup(bool p_force) {
 	OS::get_singleton()->benchmark_dump();
 
 	OS::get_singleton()->finalize_core();
+
+	Thread::release_main_thread();
 }

@@ -44,9 +44,9 @@ GODOT_CLANG_WARNING_POP
 #include <dxgi1_6.h>
 
 #if !defined(_MSC_VER)
-#include <guiddef.h>
-
 #include <thirdparty/directx_headers/include/dxguids/dxguids.h>
+
+#include <guiddef.h>
 #endif
 
 using Microsoft::WRL::ComPtr;
@@ -180,7 +180,6 @@ Error RenderingContextDriverD3D12::_initialize_devices() {
 		Device &device = driver_devices[i];
 		device.name = desc.Description;
 		device.vendor = desc.VendorId;
-		device.workarounds = Workarounds();
 
 		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
 			device.type = DEVICE_TYPE_CPU;

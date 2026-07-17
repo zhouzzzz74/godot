@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/object/method_info.h"
 #include "core/string/string_name.h"
 #include "core/templates/a_hash_map.h"
 #include "core/templates/vector.h"
@@ -54,7 +55,7 @@ protected:
 
 	StringName name;
 	/// Contains all the class names in order:
-	/// `name` is the first element and `Object` is the last.
+	/// `name` is the first element and `Object` is the last (for `Object` types).
 	Vector<StringName> name_hierarchy;
 
 	AHashMap<StringName, int64_t> constant_map;
@@ -62,6 +63,9 @@ protected:
 
 	AHashMap<StringName, const EnumInfo *> enum_map;
 	AHashMap<StringName, const EnumInfo *> self_enum_map;
+
+	AHashMap<StringName, const MethodInfo *> signal_map;
+	AHashMap<StringName, const MethodInfo *> self_signal_map;
 
 public:
 	GDType(const GDType *p_super_type, StringName p_name);
@@ -82,4 +86,7 @@ public:
 	const AHashMap<StringName, int64_t> &get_integer_constant_map(bool p_no_inheritance = false) const { return p_no_inheritance ? self_constant_map : constant_map; }
 	const AHashMap<StringName, const EnumInfo *> &get_enum_map(bool p_no_inheritance = false) const { return p_no_inheritance ? self_enum_map : enum_map; }
 	const EnumInfo *get_integer_constant_enum(const StringName &p_name, bool p_no_inheritance = false) const;
+
+	void add_signal(MethodInfo p_signal);
+	const AHashMap<StringName, const MethodInfo *> &get_signal_map(bool p_no_inheritance = false) const { return p_no_inheritance ? self_signal_map : signal_map; }
 };

@@ -34,6 +34,7 @@
 #include "lang_table.h"
 #include "windows_terminal_logger.h"
 #include "windows_utils.h"
+#include "winrt_utils.h"
 
 #include "core/config/engine.h"
 #include "core/debugger/engine_debugger.h"
@@ -98,8 +99,10 @@ extern "C" {
 #endif
 
 extern "C" {
+#ifdef ENABLE_PREFER_HIGH_PERFORMANCE_GPU
 __declspec(dllexport) DWORD NvOptimusEnablement = 1;
 __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+#endif // ENABLE_PREFER_HIGH_PERFORMANCE_GPU
 __declspec(dllexport) void NoHotPatch() {} // Disable Nahimic code injection.
 }
 
@@ -344,9 +347,7 @@ void OS_Windows::initialize() {
 }
 
 void OS_Windows::delete_main_loop() {
-	if (main_loop) {
-		memdelete(main_loop);
-	}
+	memdelete(main_loop);
 	main_loop = nullptr;
 }
 
@@ -375,9 +376,7 @@ void OS_Windows::finalize() {
 	driver_midi.close();
 #endif
 
-	if (main_loop) {
-		memdelete(main_loop);
-	}
+	memdelete(main_loop);
 
 	main_loop = nullptr;
 }
@@ -480,11 +479,10 @@ Error OS_Windows::open_dynamic_library(const String &p_path, void *&p_library_ha
 	if (!FileAccess::exists(path)) {
 		//this code exists so gdextension can load .dll files from within the executable path
 		path = get_executable_path().get_base_dir().path_join(p_path.get_file());
+		ERR_FAIL_COND_V(!FileAccess::exists(path), ERR_FILE_NOT_FOUND);
 	}
 	// Path to load from may be different from original if we make copies.
 	String load_path = path;
-
-	ERR_FAIL_COND_V(!FileAccess::exists(path), ERR_FILE_NOT_FOUND);
 
 	// Here we want a copy to be loaded.
 	// This is so the original file isn't locked and can be updated by a compiler.
@@ -1945,7 +1943,7 @@ Vector<String> OS_Windows::get_system_font_path_for_text(const String &p_font_na
 
 	Vector<String> ret;
 	for (UINT32 i = 0; i < number_of_files; i++) {
-		void const *reference_key = nullptr;
+		const void *reference_key = nullptr;
 		UINT32 reference_key_size = 0;
 		ComAutoreleaseRef<IDWriteLocalFontFileLoader> loader;
 
@@ -2024,7 +2022,7 @@ String OS_Windows::get_system_font_path(const String &p_font_name, int p_weight,
 	}
 
 	for (UINT32 i = 0; i < number_of_files; i++) {
-		void const *reference_key = nullptr;
+		const void *reference_key = nullptr;
 		UINT32 reference_key_size = 0;
 		ComAutoreleaseRef<IDWriteLocalFontFileLoader> loader;
 
@@ -2292,6 +2290,14 @@ String OS_Windows::get_locale() const {
 	return "en";
 }
 
+Vector<String> OS_Windows::get_preferred_locales() const {
+	Vector<String> out = WinRTUtils::get_preferred_locales();
+	if (out.is_empty()) {
+		out.push_back(get_locale());
+	}
+	return out;
+}
+
 String OS_Windows::get_model_name() const {
 	HKEY hkey;
 	if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Hardware\\Description\\System\\BIOS", 0, KEY_QUERY_VALUE, &hkey) != ERROR_SUCCESS) {
@@ -2508,6 +2514,19 @@ String OS_Windows::get_system_dir(SystemDir p_dir, bool p_shared_storage) const 
 
 String OS_Windows::get_user_data_dir(const String &p_user_dir) const {
 	return get_data_path().path_join(p_user_dir).replace_char('\\', '/');
+}
+
+String OS_Windows::expand_path(const String &p_path) const {
+	String path = p_path;
+
+	if (path.begins_with("~/") || path.begins_with("~\\") || path == "~") {
+		String home = get_environment("USERPROFILE");
+		if (!home.is_empty()) {
+			path = home + path.substr(1);
+		}
+	}
+
+	return path;
 }
 
 String OS_Windows::get_unique_id() const {
@@ -2747,9 +2766,7 @@ bool OS_Windows::_test_create_rendering_device_and_gl(const String &p_display_dr
 	}
 
 #ifdef GLES3_ENABLED
-	if (test_gl_manager_native) {
-		memdelete(test_gl_manager_native);
-	}
+	memdelete(test_gl_manager_native);
 #endif
 
 	DestroyWindow(hWnd);

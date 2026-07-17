@@ -34,6 +34,7 @@
 #include "core/input/input.h"
 #include "core/input/input_map.h"
 #include "core/io/dir_access.h"
+#include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/string/translation_server.h"
 #include "scene/main/scene_tree.h"
@@ -42,7 +43,6 @@
 #include "servers/audio/audio_server.h"
 #include "servers/display/accessibility_server.h"
 #include "servers/rendering/rendering_server.h"
-#include "servers/rendering/rendering_server_default.h"
 #include "tests/display_server_mock.h"
 #include "tests/force_link.gen.h"
 #include "tests/signal_watcher.h"
@@ -174,8 +174,6 @@ struct GodotTestCaseListener : public doctest::IReporter {
 		String suite_name = String(p_in.m_test_suite);
 
 		if (name.contains("[SceneTree]") || name.contains("[Editor]")) {
-			memnew(MessageQueue);
-
 			memnew(Input);
 			Input::get_singleton()->set_use_accumulated_input(false);
 
@@ -195,9 +193,6 @@ struct GodotTestCaseListener : public doctest::IReporter {
 					break;
 				}
 			}
-			memnew(RenderingServerDefault());
-			RenderingServerDefault::get_singleton()->init();
-			RenderingServerDefault::get_singleton()->set_render_loop_enabled(false);
 
 			// ThemeDB requires RenderingServer to initialize the default theme.
 			// So we have to do this for each test case. Also make sure there is
@@ -301,9 +296,7 @@ struct GodotTestCaseListener : public doctest::IReporter {
 			MessageQueue::get_singleton()->flush();
 		}
 
-		if (SceneTree::get_singleton()) {
-			memdelete(SceneTree::get_singleton());
-		}
+		memdelete(SceneTree::get_singleton());
 
 #ifndef NAVIGATION_3D_DISABLED
 		if (navigation_server_3d) {
@@ -335,37 +328,15 @@ struct GodotTestCaseListener : public doctest::IReporter {
 		}
 #endif // PHYSICS_2D_DISABLED
 
-		if (Input::get_singleton()) {
-			memdelete(Input::get_singleton());
-		}
+		memdelete(Input::get_singleton());
 
 		if (RenderingServer::get_singleton()) {
-			// ThemeDB requires RenderingServer to finalize the default theme.
-			// So we have to do this for each test case.
 			ThemeDB::get_singleton()->finalize_theme();
-
-			RenderingServer::get_singleton()->sync();
-			RenderingServer::get_singleton()->global_shader_parameters_clear();
-			RenderingServer::get_singleton()->finish();
-			memdelete(RenderingServer::get_singleton());
 		}
 
-		if (AccessibilityServer::get_singleton()) {
-			memdelete(AccessibilityServer::get_singleton());
-		}
-
-		if (DisplayServer::get_singleton()) {
-			memdelete(DisplayServer::get_singleton());
-		}
-
-		if (InputMap::get_singleton()) {
-			memdelete(InputMap::get_singleton());
-		}
-
-		if (MessageQueue::get_singleton()) {
-			MessageQueue::get_singleton()->flush();
-			memdelete(MessageQueue::get_singleton());
-		}
+		memdelete(AccessibilityServer::get_singleton());
+		memdelete(DisplayServer::get_singleton());
+		memdelete(InputMap::get_singleton());
 
 		if (AudioServer::get_singleton()) {
 			AudioServer::get_singleton()->finish();
